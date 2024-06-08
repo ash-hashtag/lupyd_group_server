@@ -1,0 +1,12 @@
+
+# Lupyd Group Server
+Meant to become Lupyd Group Protocol compatible and to set an example to be used in Lupyd and Self Hosted Environments
+
+
+# Notes Learned:
+
+Client Create Group
+Makes Server Observe the Group
+Any Member can creates proposals
+Any one member can commit pending proposals (must be synchroinzed by server (external client))
+keep track of downloaded messages, so only new messages can downloaded from server by each client
