@@ -14,6 +14,7 @@ use mls_rs::group::ProposalSender;
 use mls_rs::group::ReceivedMessage;
 use mls_rs::identity::CustomCredential;
 use mls_rs::identity::MlsCredential;
+use mls_rs::mls_rules::CommitSource;
 use mls_rs::Client;
 use mls_rs::MlsMessage;
 use std::assert_matches::assert_matches;
@@ -38,6 +39,7 @@ const CIPHER_SUITE: CipherSuite = CipherSuite::CURVE25519_AES128;
 
 const ROSTER_EXTENSION_V1: ExtensionType = ExtensionType::new(65000);
 const ADD_USER_PROPOSAL_V1: ProposalType = ProposalType::new(65001);
+const REMOVE_USER_PROPOSAL_V1: ProposalType = ProposalType::new(65002);
 const CREDENTIAL_V1: CredentialType = CredentialType::new(65002);
 
 fn crypto() -> impl CryptoProvider + Clone {
@@ -99,6 +101,16 @@ impl MlsCustomProposal for AddUserProposal {
         ADD_USER_PROPOSAL_V1
     }
 }
+#[derive(MlsSize, MlsDecode, MlsEncode)]
+struct RemoveUserProposal {
+    username: UserCredential,
+}
+
+impl MlsCustomProposal for RemoveUserProposal {
+    fn proposal_type() -> ProposalType {
+        REMOVE_USER_PROPOSAL_V1
+    }
+}
 
 /// MlsRules tell MLS how to handle our custom proposal
 #[derive(Debug, Clone, Copy)]
@@ -143,13 +155,36 @@ impl MlsRules for CustomMlsRules {
     fn filter_proposals(
         &self,
         _direction: mls_rs::mls_rules::CommitDirection,
-        _source: mls_rs::mls_rules::CommitSource,
+        source: mls_rs::mls_rules::CommitSource,
         _current_roster: &mls_rs::group::Roster,
         extension_list: &mls_rs::ExtensionList,
         mut proposals: mls_rs::mls_rules::ProposalBundle,
     ) -> Result<mls_rs::mls_rules::ProposalBundle, Self::Error> {
+        let CommitSource::ExistingMember(member) = source else {
+            return Err(CustomError);
+        };
+
         let mut roster: RosterExtension =
             extension_list.get_as().ok().flatten().ok_or(CustomError)?;
+        let Credential::Custom(custom) = member.signing_identity.credential else {
+            return Err(CustomError);
+        };
+
+        if custom.credential_type != CREDENTIAL_V1 {
+            return Err(CustomError);
+        }
+
+        let member = MemberCredential::mls_decode(&mut &*custom.data)?;
+        info!("Committer Source: {}", member.name);
+        let committer = roster
+            .roster
+            .iter()
+            .find(|u| u.public_key == member.user_public_key)
+            .ok_or(CustomError)?;
+        if !matches!(committer.role, UserRole::Moderator) {
+            error!("Regular User {} tried to commit", committer.name);
+            return Err(CustomError);
+        }
 
         let add_user_proposals = proposals
             .custom_proposals()
@@ -868,26 +903,54 @@ pub fn test_server_client() -> anyhow::Result<()> {
     )?;
     server.upload_proposal(proposal.to_bytes()?)?;
 
-    for m in server.download_messages(messages_offset) {
-        alice_pc_group.process_incoming_message(MlsMessage::from_bytes(m)?)?;
-    }
-
-    let bob_messages_offset = server.message_queue.len();
-
-    let commit = alice_pc_group.commit(Vec::new())?;
+    // Bob tries to commit as regular user
+    let commit = bob_tablet_group.commit(Vec::new())?;
 
     server.upload_commit(commit.commit_message.to_bytes()?)?;
+    let _ = bob_tablet_group.apply_pending_commit()?;
 
-    let _ = alice_pc_group.apply_pending_commit()?;
+    // for m in server.download_messages(messages_offset) {
+    //     alice_pc_group.process_incoming_message(MlsMessage::from_bytes(m)?)?;
+    // }
+
+    // let bob_messages_offset = server.message_queue.len();
+
+    // let commit = alice_pc_group.commit(Vec::new())?;
+
+    // server.upload_commit(commit.commit_message.to_bytes()?)?;
+
+    // let _ = alice_pc_group.apply_pending_commit()?;
 
     for m in server.download_messages(messages_offset) {
         let msg = MlsMessage::from_bytes(m)?;
-        alice_tablet_group.process_incoming_message(msg)?;
+        alice_tablet_group.process_incoming_message(msg.clone())?;
+        alice_pc_group.process_incoming_message(msg.clone())?;
     }
-    for m in server.download_messages(bob_messages_offset) {
-        let msg = MlsMessage::from_bytes(m)?;
-        bob_tablet_group.process_incoming_message(msg)?;
-    }
+    // for m in server.download_messages(bob_messages_offset) {
+    //     let msg = MlsMessage::from_bytes(m)?;
+    //     bob_tablet_group.process_incoming_message(msg)?;
+    // }
+
+    // for m in server.download_messages(messages_offset) {
+    //         alice_pc_group.process_incoming_message(MlsMessage::from_bytes(m)?)?;
+    //     }
+
+    //     let bob_messages_offset = server.message_queue.len();
+
+    //     let commit = alice_pc_group.commit(Vec::new())?;
+
+    //     server.upload_commit(commit.commit_message.to_bytes()?)?;
+
+    //     let _ = alice_pc_group.apply_pending_commit()?;
+
+    //     for m in server.download_messages(messages_offset) {
+    //         let msg = MlsMessage::from_bytes(m)?;
+    //         alice_tablet_group.process_incoming_message(msg)?;
+    //     }
+    //     for m in server.download_messages(bob_messages_offset) {
+    //         let msg = MlsMessage::from_bytes(m)?;
+    //         bob_tablet_group.process_incoming_message(msg)?;
+    //     }
 
     let (mut charles_tablet_group, mem_info) =
         charles_tablet_client.join_group(None, &commit.welcome_messages[0])?;

@@ -52,8 +52,8 @@ async fn main() {
     //     run().await;
     // }
     // test_custom_client().unwrap();
-    // test_server_client().unwrap();
-    normal_test().unwrap();
+    test_server_client().unwrap();
+    // normal_test().unwrap();
 }
 
 async fn run() {
